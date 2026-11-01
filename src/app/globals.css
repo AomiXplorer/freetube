@@ -27,6 +27,31 @@
     --yt-red: 0 100% 50%;
     --safe-bottom: env(safe-area-inset-bottom, 0px);
     --safe-top: env(safe-area-inset-top, 0px);
+    /* Chrome heights. Mobile only: desktop has no bottom nav. */
+    --nav-h: 56px;
+    --mini-h: 64px;
+    --nav-offset: calc(var(--nav-h) + var(--safe-bottom));
+    /* Content clearance = whatever floats above the bottom of the viewport. */
+    --shell-pad-bottom: calc(var(--nav-offset) + 0.75rem);
+  }
+
+  @media (min-width: 768px) {
+    :root {
+      --nav-h: 0px;
+      --nav-offset: 0px;
+      --shell-pad-bottom: 1.5rem;
+    }
+  }
+
+  /* Set by the app shell while the mini player is on screen. */
+  [data-mini="true"] {
+    --shell-pad-bottom: calc(var(--nav-offset) + var(--mini-h) + 0.75rem);
+  }
+
+  @media (min-width: 768px) {
+    [data-mini="true"] {
+      --shell-pad-bottom: 6rem;
+    }
   }
 
   .dark {

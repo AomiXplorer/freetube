@@ -24,7 +24,13 @@ type PlayerState = {
   repeat: RepeatMode;
   shuffle: boolean;
   backgroundAudio: boolean;
+  /** Play audio only: keeps sound alive with the screen off or the tab hidden. */
+  audioOnly: boolean;
   miniOpen: boolean;
+  /** Bumped by stopPlayback() so mounted players tear down their listeners. */
+  stopToken: number;
+  /** Shared playhead so the watch player and the audio engine hand off cleanly. */
+  positionSeconds: number;
   sleepTimerEndsAt: number | null;
   sponsorBlock: boolean;
   setQueue: (queue: QueueItem[], startIndex?: number) => void;
@@ -41,7 +47,11 @@ type PlayerState = {
   cycleRepeat: () => void;
   toggleShuffle: () => void;
   setBackgroundAudio: (enabled: boolean) => void;
+  setAudioOnly: (enabled: boolean) => void;
   setMiniOpen: (open: boolean) => void;
+  setPosition: (seconds: number) => void;
+  /** Hard stop: no autoplay-next, no queue, no mini player. */
+  stopPlayback: () => void;
   startSleepTimer: (minutes: number) => void;
   clearSleepTimer: () => void;
   setSponsorBlock: (enabled: boolean) => void;
@@ -60,7 +70,10 @@ export const usePlayerStore = create<PlayerState>()(
       repeat: "off",
       shuffle: false,
       backgroundAudio: true,
+      audioOnly: false,
       miniOpen: false,
+      stopToken: 0,
+      positionSeconds: 0,
       sleepTimerEndsAt: null,
       sponsorBlock: false,
 
@@ -128,7 +141,18 @@ export const usePlayerStore = create<PlayerState>()(
         })),
       toggleShuffle: () => set((state) => ({ shuffle: !state.shuffle })),
       setBackgroundAudio: (backgroundAudio) => set({ backgroundAudio }),
+      setAudioOnly: (audioOnly) => set({ audioOnly }),
       setMiniOpen: (miniOpen) => set({ miniOpen }),
+      setPosition: (positionSeconds) => set({ positionSeconds }),
+      stopPlayback: () =>
+        set((state) => ({
+          queue: [],
+          index: 0,
+          playing: false,
+          miniOpen: false,
+          positionSeconds: 0,
+          stopToken: state.stopToken + 1,
+        })),
       startSleepTimer: (minutes) =>
         set({ sleepTimerEndsAt: Date.now() + minutes * 60_000 }),
       clearSleepTimer: () => set({ sleepTimerEndsAt: null }),
@@ -144,6 +168,7 @@ export const usePlayerStore = create<PlayerState>()(
         repeat: state.repeat,
         shuffle: state.shuffle,
         backgroundAudio: state.backgroundAudio,
+        audioOnly: state.audioOnly,
         sponsorBlock: state.sponsorBlock,
         queue: state.queue,
         index: state.index,

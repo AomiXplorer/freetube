@@ -12,6 +12,7 @@
  */
 import { cached, cacheKey } from "@/lib/cache";
 import { getSessionCookies } from "@/lib/auth/session";
+import { getValidAccessToken } from "@/lib/auth/tokens";
 import { sapisidHash } from "@/lib/auth/sapisid";
 import { CLIENT_ROTATION, CLIENTS, type ClientContext, type ClientName } from "./contexts";
 import { innerTubeEnvelope, parseOrThrow } from "./schema";
@@ -40,9 +41,31 @@ export type InnerTubeResult = {
   usedAuth: boolean;
 };
 
+/**
+ * Credentials attached to a request.
+ *  - bearer: an OAuth token from the TV device flow (best coverage; bypasses
+ *    the signed-out bot wall for that user).
+ *  - cookie: a pasted youtube.com cookie header (SAPISIDHASH auth).
+ */
+type Auth = { bearer: string | null; cookie: string | null };
+
+const NO_AUTH: Auth = { bearer: null, cookie: null };
+
+async function resolveAuth(authenticated: boolean | undefined): Promise<Auth> {
+  if (!authenticated) return NO_AUTH;
+  const bearer = await getValidAccessToken().catch(() => null);
+  if (bearer) return { bearer, cookie: null };
+  const cookie = await getSessionCookies().catch(() => null);
+  return cookie ? { bearer: null, cookie } : NO_AUTH;
+}
+
+export function hasAuth(auth: Auth): boolean {
+  return Boolean(auth.bearer ?? auth.cookie);
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function buildHeaders(client: ClientContext, auth: string | null): Promise<HeadersInit> {
+async function buildHeaders(client: ClientContext, auth: Auth): Promise<HeadersInit> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "User-Agent": client.userAgent,
@@ -55,23 +78,26 @@ async function buildHeaders(client: ClientContext, auth: string | null): Promise
   if (client.name === "ANDROID" || client.name === "IOS") {
     headers["X-Goog-Api-Format-Version"] = "2";
   }
-  if (auth) {
-    headers.Cookie = auth;
-    const hash = await sapisidHash(auth);
+  if (auth.bearer) {
+    headers.Authorization = `Bearer ${auth.bearer}`;
+    headers["X-Goog-AuthUser"] = "0";
+  } else if (auth.cookie) {
+    headers.Cookie = auth.cookie;
+    const hash = await sapisidHash(auth.cookie);
     if (hash) headers.Authorization = hash;
     headers["X-Goog-AuthUser"] = "0";
   }
   return headers;
 }
 
-function buildBody(client: ClientContext, body: Json, auth: string | null): Json {
+function buildBody(client: ClientContext, body: Json, auth: Auth): Json {
   const context: Json = {
     client: {
       ...client.body,
       ...(process.env.YT_VISITOR_DATA ? { visitorData: process.env.YT_VISITOR_DATA } : {}),
     },
   };
-  if (auth) {
+  if (hasAuth(auth)) {
     context.user = { lockedSafetyMode: false };
     context.request = { useSsl: true, internalExperimentFlags: [] };
   }
@@ -81,7 +107,7 @@ function buildBody(client: ClientContext, body: Json, auth: string | null): Json
 async function attempt(
   options: RequestOptions,
   clientName: ClientName,
-  auth: string | null,
+  auth: Auth,
 ): Promise<Json> {
   const client = CLIENTS[clientName];
   const url = `${API_BASE}/${options.endpoint}?key=${client.apiKey}&prettyPrint=false`;
@@ -117,14 +143,9 @@ export async function innertube(options: RequestOptions): Promise<InnerTubeResul
   const clients =
     options.clients ??
     (options.endpoint === "player" ? CLIENT_ROTATION.player : CLIENT_ROTATION.browse);
-  const auth = options.authenticated ? await getSessionCookies() : null;
-  const key = cacheKey(
-    "it",
-    options.endpoint,
-    options.cacheTag,
-    auth ? "auth" : "anon",
-    process.env.INNERTUBE_REGION,
-  );
+  const auth = await resolveAuth(options.authenticated);
+  const authMode = auth.bearer ? "bearer" : auth.cookie ? "cookie" : "anon";
+  const key = cacheKey("it", options.endpoint, options.cacheTag, authMode, process.env.INNERTUBE_REGION);
   const ttl = options.ttl ?? 300;
 
   const run = async (): Promise<InnerTubeResult> => {
@@ -134,7 +155,7 @@ export async function innertube(options: RequestOptions): Promise<InnerTubeResul
       for (let tryIndex = 0; tryIndex < 2; tryIndex++) {
         try {
           const data = await attempt(options, clientName, auth);
-          return { data, client: clientName, usedAuth: Boolean(auth) };
+          return { data, client: clientName, usedAuth: hasAuth(auth) };
         } catch (error) {
           lastError = error;
           const status = (error as { status?: number }).status;
@@ -144,6 +165,18 @@ export async function innertube(options: RequestOptions): Promise<InnerTubeResul
         }
       }
     }
+    // One structured, redacted line per failure: enough to diagnose a break,
+    // never enough to leak a cookie or a token.
+    console.warn(
+      JSON.stringify({
+        scope: "innertube",
+        endpoint: options.endpoint,
+        cacheTag: options.cacheTag,
+        auth: auth.bearer ? "bearer" : auth.cookie ? "cookie" : "anon",
+        clients: clients.join(","),
+        error: lastError instanceof Error ? lastError.message : "unknown",
+      }),
+    );
     throw lastError instanceof Error ? lastError : new Error("InnerTube request failed");
   };
 

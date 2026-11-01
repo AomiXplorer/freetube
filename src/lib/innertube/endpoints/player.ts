@@ -1,4 +1,5 @@
 import { cached, cacheKey } from "@/lib/cache";
+import { getValidAccessToken } from "@/lib/auth/tokens";
 import { innertube } from "../client";
 import { parseOrThrow, playerResponse, streamingFormat, type StreamingFormat } from "../schema";
 import { createUnlockContext, unlockUrl, type UnlockContext } from "../cipher";
@@ -89,11 +90,15 @@ export type PlayerData = {
 export async function getPlayerData(videoId: string): Promise<PlayerData> {
   const cacheKeyId = cacheKey("player", videoId, process.env.INNERTUBE_REGION);
   return cached(cacheKeyId, 1800, async () => {
-    const { data, client } = await innertube({
+    // Signed-in callers are served by the TV client (the one our OAuth token
+    // belongs to); anonymous callers get the Android/iOS-first rotation because
+    // those contexts hand out plain progressive URLs when YouTube allows them.
+    const signedIn = Boolean(await getValidAccessToken().catch(() => null));
+    const { data, client, usedAuth } = await innertube({
       endpoint: "player",
       body: { videoId, contentCheckOk: true, racyCheckOk: true },
       ttl: 0,
-      clients: ["ANDROID", "IOS", "WEB", "TVHTML5"],
+      clients: signedIn ? ["TVHTML5", "ANDROID", "IOS", "WEB"] : ["ANDROID", "IOS", "TVHTML5", "WEB"],
       authenticated: true,
     });
 
@@ -121,7 +126,21 @@ export async function getPlayerData(videoId: string): Promise<PlayerData> {
       streams: null as StreamInfo | null,
     };
 
-    if (!playable) return base;
+    if (!playable) {
+      // Redacted diagnostic: which client answered, with what verdict, and the
+      // first few words of YouTube's own reason. No cookies, no tokens, no URLs.
+      console.warn(
+        JSON.stringify({
+          scope: "player",
+          videoId,
+          client,
+          auth: usedAuth ? "signed-in" : "anonymous",
+          status: status?.status ?? "unknown",
+          reason: String(base.reason ?? "").slice(0, 120),
+        }),
+      );
+      return base;
+    }
 
     const captions: CaptionTrack[] =
       parsed.captions?.playerCaptionsTracklistRenderer?.captionTracks?.map((track) => ({
@@ -151,17 +170,29 @@ export async function getPlayerData(videoId: string): Promise<PlayerData> {
     const formats = classify(unlocked);
     const expiresIn = Number(parsed.streamingData?.expiresInSeconds ?? 0);
 
+    if (!formats.length) {
+      console.warn(
+        JSON.stringify({
+          scope: "player",
+          videoId,
+          client,
+          auth: usedAuth ? "signed-in" : "anonymous",
+          status: "NO_FORMATS",
+          reason: "streamingData returned no usable URL (PO token or SABR-only response)",
+        }),
+      );
+      return { ...base, captions, playable: false, streams: null };
+    }
+
     return {
       ...base,
       captions,
-      streams: formats.length
-        ? {
-            formats,
-            expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : undefined,
-            hlsManifestUrl: parsed.streamingData?.hlsManifestUrl,
-            dashManifestUrl: parsed.streamingData?.dashManifestUrl,
-          }
-        : null,
+      streams: {
+        formats,
+        expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : undefined,
+        hlsManifestUrl: parsed.streamingData?.hlsManifestUrl,
+        dashManifestUrl: parsed.streamingData?.dashManifestUrl,
+      },
     };
   });
 }
@@ -195,4 +226,34 @@ export async function getVideoBundle(videoId: string) {
     (await import("./next")).getWatchNext(videoId).catch(() => null),
   ]);
   return { player, watch };
+}
+
+/**
+ * Browsers are picky: Safari only plays H.264/AAC in MP4, Chrome handles VP9
+ * and AV1 but chokes on some Dolby audio, and every platform plays progressive
+ * MP4. So we rank by "can this container actually play here" instead of just
+ * taking the highest bitrate.
+ */
+export function formatRank(format: VideoStreamFormat): number {
+  const codecs = (format.codecs ?? "").toLowerCase();
+  const mime = format.mimeType.toLowerCase();
+  let rank = 0;
+  if (codecs.startsWith("avc1")) rank += 100;
+  else if (codecs.startsWith("vp9") || codecs.startsWith("vp09")) rank += 60;
+  else if (codecs.startsWith("av01")) rank += 40;
+  if (mime.includes("mp4")) rank += 30;
+  if (format.hasAudio) rank += 20;
+  rank += Math.min(20, (format.height ?? 0) / 100);
+  return rank;
+}
+
+/** Pick the best format a browser can play, preferring muxed (no audio sync dance). */
+export function pickBrowserFormat(formats: VideoStreamFormat[], wantedHeight?: number): VideoStreamFormat | undefined {
+  const video = formats.filter((f) => f.hasVideo && f.url);
+  if (!video.length) return undefined;
+  const pool = wantedHeight
+    ? video.filter((f) => Math.abs((f.height ?? 0) - wantedHeight) <= 120)
+    : video;
+  const candidates = pool.length ? pool : video;
+  return [...candidates].sort((a, b) => formatRank(b) - formatRank(a))[0];
 }

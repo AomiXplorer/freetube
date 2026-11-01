@@ -1,18 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, LogOut, Moon, Shield, Smartphone, Sun, Trash2 } from "lucide-react";
+import { Check, Moon, Smartphone, Sun, Trash2 } from "lucide-react";
 import { useTheme } from "@/components/providers";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { usePlayerStore } from "@/store/player";
 import { clearHistory, clearSearches } from "@/db";
 import { cn } from "@/lib/utils/cn";
-
-type SessionStatus = { status: "anonymous" | "connected"; cookies?: number; hasAuth?: boolean };
+import { AccountSection } from "./account-section";
 
 function Section({
   title,
@@ -46,7 +43,6 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 
 export function SettingsPage() {
   const { theme, setTheme } = useTheme();
-  const queryClient = useQueryClient();
   const {
     quality,
     setQuality,
@@ -59,58 +55,17 @@ export function SettingsPage() {
     sleepTimerEndsAt,
     startSleepTimer,
     clearSleepTimer,
+    audioOnly,
+    setAudioOnly,
   } = usePlayerStore();
 
-  const [cookieInput, setCookieInput] = useState("");
   const [message, setMessage] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const session = useQuery<SessionStatus>({
-    queryKey: ["session"],
-    queryFn: async () => {
-      const res = await fetch("/api/auth/session");
-      if (!res.ok) return { status: "anonymous" as const };
-      return (await res.json()) as SessionStatus;
-    },
-    staleTime: 30_000,
-  });
 
   useEffect(() => {
     if (!message) return;
     const timer = setTimeout(() => setMessage(null), 4000);
     return () => clearTimeout(timer);
   }, [message]);
-
-  const connect = async () => {
-    setBusy(true);
-    try {
-      const res = await fetch("/api/auth/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cookies: cookieInput }),
-      });
-      const body = (await res.json()) as { error?: string; message?: string };
-      if (!res.ok) {
-        setMessage(body.message ?? body.error ?? "Could not connect");
-      } else {
-        setCookieInput("");
-        setMessage("Connected. Personalised feeds are now available.");
-        await queryClient.invalidateQueries();
-      }
-    } catch {
-      setMessage("Network error while saving cookies.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const disconnect = async () => {
-    setBusy(true);
-    await fetch("/api/auth/session", { method: "DELETE" });
-    await queryClient.invalidateQueries();
-    setMessage("Signed out. Anonymous mode active.");
-    setBusy(false);
-  };
 
   const sleepMinutesLeft = sleepTimerEndsAt
     ? Math.max(0, Math.round((sleepTimerEndsAt - Date.now()) / 60000))
@@ -173,8 +128,12 @@ export function SettingsPage() {
           </div>
         </Row>
 
-        <Row label="Background audio" hint="Keep audio playing when the app is in the background">
+        <Row label="Background audio" hint="Keep sound alive when the tab is hidden or the screen is off">
           <Switch checked={backgroundAudio} onCheckedChange={setBackgroundAudio} label="Background audio" />
+        </Row>
+
+        <Row label="Listen with audio only" hint="Plays the audio track instead of the video (saves battery and data)">
+          <Switch checked={audioOnly} onCheckedChange={setAudioOnly} label="Audio only" />
         </Row>
 
         <Row label="Skip sponsor segments" hint="Uses the public SponsorBlock API">
@@ -200,43 +159,7 @@ export function SettingsPage() {
         </Row>
       </Section>
 
-      <Section
-        title="YouTube account (optional)"
-        description="Paste your own youtube.com cookies to unlock personalised Home, Subscriptions, History, playlists and age-restricted videos. Cookies are encrypted with AES-256-GCM and kept in an httpOnly cookie on your device. They are never logged or shared."
-      >
-        <div className="flex items-center gap-2 text-sm">
-          <Shield className="size-4 text-muted-foreground" />
-          Status:{" "}
-          <span className={session.data?.status === "connected" ? "text-emerald-500" : "text-muted-foreground"}>
-            {session.data?.status === "connected"
-              ? `connected (${session.data.cookies ?? 0} cookies)`
-              : "anonymous"}
-          </span>
-        </div>
-
-        {session.data?.status === "connected" ? (
-          <Button variant="outline" onClick={disconnect} disabled={busy}>
-            <LogOut className="size-4" /> Disconnect
-          </Button>
-        ) : (
-          <>
-            <Input
-              value={cookieInput}
-              onChange={(event) => setCookieInput(event.target.value)}
-              placeholder="SID=...; HSID=...; SSID=...; SAPISID=..."
-              className="font-mono text-xs"
-            />
-            <Button onClick={connect} disabled={busy || cookieInput.trim().length < 10}>
-              {busy ? "Saving…" : "Connect cookies"}
-            </Button>
-            <p className="text-xs text-muted-foreground">
-              On youtube.com open DevTools → Network → copy the <code>Cookie</code> request header.
-              Do this on your own account only.
-            </p>
-          </>
-        )}
-        {message ? <p className="text-xs text-foreground">{message}</p> : null}
-      </Section>
+      <AccountSection />
 
       <Section
         title="Local data"

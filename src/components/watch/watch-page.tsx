@@ -147,16 +147,6 @@ export function WatchPage() {
             onTheaterChange={setTheater}
           />
 
-          {!details.playable ? (
-            <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
-              <p className="font-medium">Native playback unavailable</p>
-              <p className="mt-1 text-muted-foreground">
-                {details.playabilityReason ??
-                  "YouTube refused the stream request (bot check or signed-out limit). The embedded player above is used instead."}
-              </p>
-            </div>
-          ) : null}
-
           <h1 className="mt-4 text-lg font-medium leading-6 md:text-xl">{details.title}</h1>
 
           <div className="mt-3 flex flex-wrap items-center gap-3">

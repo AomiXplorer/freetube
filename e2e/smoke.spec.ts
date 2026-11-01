@@ -32,22 +32,95 @@ test.describe("Freetube shell", () => {
     });
   });
 
-  test("watch page plays or falls back to the embed", async ({ page }) => {
+  test("watch page plays or silently falls back to the embed", async ({ page }) => {
     await page.goto("/watch?v=dQw4w9WgXcQ");
     // Either the native <video> pipeline or the no-cookie embed must be mounted.
     await expect(
       page.locator("main video, main iframe[src*='youtube'], main iframe[src*='youtube-nocookie']").first(),
     ).toBeVisible({ timeout: 45_000 });
     await expect(page.locator("main")).toContainText(/Rick Astley/i, { timeout: 45_000 });
+
+    // Users never see implementation labels about which pipeline is running.
+    const main = page.locator("main");
+    await expect(main).not.toContainText(/Embedded player/i);
+    await expect(main).not.toContainText(/Native playback unavailable/i);
+    await expect(main).not.toContainText(/Sign in to confirm/i);
   });
 
-  test("settings page exposes cookie connect and theme controls", async ({ page }) => {
+  test("player controls appear with the native player", async ({ page }) => {
+    await page.goto("/watch?v=dQw4w9WgXcQ");
+    await expect(page.locator("main video, main iframe").first()).toBeVisible({ timeout: 45_000 });
+
+    // Anonymous deployments get the embed, which has no custom controls by
+    // design; a native stream (signed in) must expose both new toggles.
+    if ((await page.locator("main video").count()) === 0) {
+      await expect(page.locator("main iframe").first()).toBeVisible();
+      return;
+    }
+    await expect(page.getByRole("button", { name: /audio only/i }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /picture in picture/i }).first()).toBeVisible();
+  });
+
+  test("settings page exposes sign-in, advanced cookies and theme controls", async ({ page }) => {
     await page.goto("/settings");
     await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
     await expect(page.getByRole("button", { name: /^Dark$/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Sign in with Google/i })).toBeVisible();
+
+    // Cookies are the advanced path now: the field only appears after opting in.
+    await expect(page.getByPlaceholder(/SID=/)).toHaveCount(0);
+    await page.getByRole("button", { name: /Advanced: paste cookies/i }).click();
     await expect(page.getByPlaceholder(/SID=/)).toBeVisible();
+
     await page.getByRole("button", { name: /^Dark$/ }).click();
     await expect(page.locator("html")).toHaveClass(/dark/);
+  });
+
+  test("device sign-in shows a real Google code", async ({ page }) => {
+    await page.goto("/settings");
+    await page.getByRole("button", { name: /Sign in with Google/i }).click();
+    const code = page.locator("code").filter({ hasText: /^[A-Z0-9-]{8,}$/ }).first();
+    await expect(code).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("link", { name: /google.com\/device/i })).toHaveAttribute(
+      "href",
+      /google\.com\/device/,
+    );
+  });
+
+  test("closing the mini player stops playback instead of skipping", async ({ page }) => {
+    // Seed a track without needing a signed-in stream: this asserts UI state only.
+    await page.goto("/");
+    await page.evaluate(() => {
+      localStorage.setItem(
+        "freetube-player",
+        JSON.stringify({
+          state: {
+            queue: [{ videoId: "aqz-KE-bpKQ", title: "Big Buck Bunny", channelName: "Blender" }],
+            index: 0,
+            playing: true,
+            miniOpen: false,
+          },
+          version: 0,
+        }),
+      );
+    });
+    await page.reload();
+
+    const close = page.getByRole("button", { name: /Stop and close mini player/i });
+    await expect(close).toBeVisible({ timeout: 15_000 });
+    const box = await close.boundingBox();
+    // Touch target must stay at least 44x44 CSS px.
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+
+    const before = page.url();
+    await close.click();
+    await expect(close).toHaveCount(0);
+    expect(page.url()).toBe(before);
+    const queueLength = await page.evaluate(
+      () => JSON.parse(localStorage.getItem("freetube-player") ?? "{}")?.state?.queue?.length ?? -1,
+    );
+    expect(queueLength).toBe(0);
   });
 
   test("installable manifest is served", async ({ request }) => {

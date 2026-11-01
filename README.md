@@ -24,10 +24,12 @@ server, no database, no official API key.
 | Library: history, playlists, watch later, liked, subscriptions | ✅ | IndexedDB only, never uploaded |
 | Player: quality, speed, subtitles, PiP, gestures, sleep timer, keyboard shortcuts | ✅ | See "Player" below |
 | SponsorBlock skipping | ✅ | Opt-in in Settings |
-| Media Session / background audio | ✅ | Lock-screen controls + next track |
+| Media Session / background audio | ✅ | Audio-only handoff when the tab hides, full lock-screen controls (play/pause/seek/next/prev), position state |
+| Google sign-in (TV device flow) | ✅ | Code + google.com/device, no password ever typed here; access/refresh tokens sealed in httpOnly cookies |
+| Mini player | ✅ | Global audio engine, survives navigation, swipe-away, real stop |
 | PWA: installable, standalone, offline shell, Windows overlay | ✅ | Serwist service worker + `display_override: window-controls-overlay` |
-| Optional YouTube login (cookie mode) | ✅ | AES-256-GCM sealed httpOnly cookie + SAPISIDHASH |
-| Native stream URLs (signature + `n` unlock) | ⚠️ Best effort | Works only where YouTube allows the request; otherwise automatic embed fallback (see §7) |
+| Cookie login (advanced fallback) | ✅ | AES-256-GCM sealed httpOnly cookie + SAPISIDHASH |
+| Native stream URLs (signature + `n` unlock) | ⚠️ Signed-in only in practice | Anonymous requests from datacenter IPs get the bot wall; signed-in (device flow) requests play natively. Otherwise a silent embed takes over (see §7) |
 | Downloads / casting / live chat | ❌ Not implemented | Deliberate scope cut |
 | Uploading, commenting, liking on YouTube's side | ❌ Read-only client | Everything user-side is local |
 
@@ -39,6 +41,10 @@ server, no database, no official API key.
 - Mobile gestures: double-tap seek (±10s), vertical swipe for volume (left) / brightness (right).
 - Keyboard: `Space`/`K` play, `J`/`L` ±10s, `←`/`→` ±5s, `↑`/`↓` volume, `M` mute, `F` fullscreen,
   `T` theater, `C` captions, `I` PiP, `>`/`<` speed, `0-9` seek percent.
+- **Background playback.** On `visibilitychange` the player hands the timeline to an audio-only element
+  (or to the global audio engine when the video is not on screen), so the screen can be off while sound
+  keeps going. Coming back re-seats the video at the audio's position. Nothing pauses on `blur`.
+- **Audio only** toggle (player + Settings) and PiP, both reachable on mobile.
 - Sleep timer and "background audio" toggle live in **Settings**.
 
 ---
@@ -68,6 +74,39 @@ server, no database, no official API key.
 
 `vercel.json` sets `maxDuration: 30` for the Node routes; every route also has an internal 12s abort
 controller so a hung upstream never eats the whole budget.
+
+### Signing in (Google TV device flow)
+
+Settings → **Sign in with Google** starts the OAuth 2.0 device flow against the YouTube **TV (Cobalt)**
+client:
+
+1. `POST /api/auth/device/start` asks Google for a `device_code` + `user_code`. The `device_code` is
+   sealed (AES-GCM) into an httpOnly cookie; it is the only value that can be exchanged for a token, so it
+   never reaches page JavaScript.
+2. The UI shows the short code and opens `google.com/device`. **The user types their email and password on
+   Google's own page.** This app never renders a password field, never receives a password, and cannot see
+   the account credentials.
+3. `/api/auth/device/poll` polls `o/oauth2/token` on the interval Google returned until the user approves,
+   the code expires (30 min), or access is denied. Outcomes map to explicit UI states (`pending`,
+   `slow_down`, `expired`, `denied`).
+4. On approval the `access_token` + `refresh_token` are sealed into the httpOnly `ft_oauth` cookie. Requests
+   to InnerTube then carry `Authorization: Bearer <access_token>`, which is what unlocks a personal Home
+   feed, Subscriptions, History, playlists, Liked and native stream URLs.
+5. Access tokens live 60 minutes and are refreshed lazily **60 seconds before expiry** inside route
+   handlers, which are allowed to rewrite the cookie. A revoked refresh token clears the session instead of
+   looping. **Sign out** deletes every cookie (`ft_oauth`, `ft_profile`, `ft_session`).
+
+Nothing is sent anywhere except to YouTube/Google, and no token is ever logged. The only diagnostics are
+redacted one-line JSON records (endpoint, client, auth mode, error) - see `src/lib/innertube/client.ts`.
+
+**Why not the official Google OAuth + YouTube Data API v3?** That path needs a Google Cloud project, a
+registered OAuth client and an API key review. It also cannot return the personalised recommendation feed:
+`youtube.readonly` exposes Subscriptions, Playlists and Likes, but not "recommended for you". The TV flow
+is the only supported route to a personal home feed.
+
+**When the device flow is blocked** (Google occasionally rejects the TV client for a region or an account),
+the fallback is Settings → *Advanced: paste cookies* (sealed the same way), or anonymous mode with no
+sign-in at all - browsing, search and the embed player work without any account.
 
 ---
 
@@ -100,7 +139,8 @@ npm run dev          # http://localhost:3000
 | `NEXT_PUBLIC_SITE_URL` | recommended | Canonical URL for metadata/manifest |
 | `INNERTUBE_REGION` / `INNERTUBE_LANGUAGE` | optional | `gl` / `hl` context hints (default `US` / `en`) |
 | `UPSTASH_REDIS_REST_URL` + `..._TOKEN` | optional | Shared cache. Also reads `KV_REST_API_URL` / `KV_REST_API_TOKEN`, so a Vercel KV store works unchanged |
-| `SESSION_SECRET` | for login mode | 32+ chars; encrypts the user's YouTube cookies. `openssl rand -base64 32` |
+| `SESSION_SECRET` | for login mode | 32+ chars; AES-GCM key for the sealed OAuth tokens and pasted cookies. `openssl rand -base64 32` |
+| `YT_OAUTH_CLIENT_ID` / `YT_OAUTH_CLIENT_SECRET` | optional | Override the public YouTube TV (Cobalt) OAuth client used by the device flow. Defaults are bundled; override only if Google rotates them |
 | `YT_VISITOR_DATA` | optional | Base64 `visitorData` from a browser session; sometimes clears the "confirm you're not a bot" wall |
 
 Without Redis the app uses a bounded in-memory cache (fine locally; on Vercel each cold isolate starts
@@ -214,16 +254,34 @@ banner. Video playback obviously requires connectivity.
 
 ## 7. Known limitations (read this)
 
-1. **Stream unlocks are best effort.** YouTube signs `googlevideo` URLs with a per-request cipher and a
-   rotating `n` transform inside `base.js`. `src/lib/innertube/cipher.ts` extracts and re-applies both
-   (function-body parsing + an isolated evaluation of YouTube's own `n` function). YouTube changes this
-   regularly, and datacenter IPs are frequently challenged with *"Sign in to confirm you're not a bot"*
-   or plain `UNPLAYABLE`. When unlocking fails, `/api/video` returns `playable: false` with a reason and
-   the UI switches to the **official embed player** automatically — the app stays usable.
-2. **Cookie mode is optional and local.** Without it, Home is the public fallback feed and
-   Subscriptions/Library are local-only. Cookies are encrypted into an httpOnly cookie; nothing is
-   logged. Only use your own account, and note that YouTube may flag automation on any third-party client.
+1. **Anonymous native playback is not possible from datacenter IPs.** YouTube answers unsigned-in
+   `player` requests from Vercel/AWS ranges with `LOGIN_REQUIRED - Sign in to confirm you're not a bot` for
+   every client context, and the newer `WEB` clients additionally require a **PO token** we cannot mint
+   server-side. Verified against the live API: `WEB`, `MWEB`, `TVHTML5`, `ANDROID`, `IOS` and
+   `WEB_EMBEDDED_PLAYER` all return zero formats for anonymous requests from the deployment IP.
+   Consequences:
+   - **Signed in** (device flow) → `Authorization: Bearer` clears the bot wall and native streams work.
+   - **Signed out** → the player uses the **official embed**, silently: no badge, no technical text. Only if
+     the embed itself refuses (owner disabled embedding, age gate, live without permissions) does the UI
+     show a plain message with **Try again** and *Open on YouTube*.
+   - The app rotates `TVHTML5 → ANDROID → IOS → WEB`, retries each twice with jittered backoff, ranks formats
+     by browser playability (H.264 → VP9 → AV1, muxed before adaptive) and logs one redacted line
+     (`scope`, `videoId`, `client`, `auth`, `status`, `reason`) to the server console for diagnosis.
+2. **Sign-in is optional.** Anonymous mode still browses, searches, plays via embed and keeps local
+   history/playlists. Cookies remain available as an advanced fallback; tokens are AES-GCM sealed and never
+   logged. YouTube may flag automation on any third-party client - use your own account and accept that.
 3. **Shorts and live** use the embed, not native playback (most aggressively gated surfaces).
+
+### Background audio: platform behaviour
+
+| Platform | Result | Notes |
+| --- | --- | --- |
+| Android Chrome (PWA installed) | ✅ Keeps playing | `<audio>` + Media Session; the audio-only handoff runs when the document becomes hidden |
+| Android Chrome (browser tab) | ✅ Keeps playing | Same path; Chrome may throttle timers but audio playback continues |
+| iOS Safari (PWA standalone) | ⚠️ Mostly | Must be installed *and* playback started from a tap. iOS suspends media when the app is force-closed or after long backgrounding; the video track stops, audio continues in most cases |
+| iOS Safari (tab) | ⚠️ Limited | Tab backgrounding can suspend media; Apple only guarantees audio for `<audio>` with an active Media Session |
+| Lock screen / notification | ✅ | Play/pause, ±10s, next/previous and a scrubbable position bar come from Media Session |
+| Desktop when the OS sleeps | ⚠️ | The browser suspends the tab; playback resumes from the saved position |
 4. **Comments are read-only.** Replies pagination is not implemented (the "show more" flow is).
 5. **No video proxying.** If a network blocks `googlevideo.com` outright, playback falls back to embed.
 6. **APIs are unofficial.** Endpoint names/params can change without notice; the tolerant walker reduces
@@ -241,7 +299,9 @@ npm run e2e
 
 Unit tests cover: count/duration formatting, thumbnail selection, protobuf search params (asserted against
 the exact base64 YouTube emits), cipher plan extraction + `n` transform, renderer merging
-(`videoRenderer` + `lockupViewModel`), watch-page parsing, comments entity-batch parsing, Zod validation.
+(`videoRenderer` + `lockupViewModel`), watch-page parsing, comments entity-batch parsing, Zod validation,
+**mini-player close vs. natural end** (stop clears the queue and never advances; `next()` still does) and
+**token refresh** (safety window, refresh-token retention, device-flow error mapping).
 
 E2E covers the shell, search, settings and the served manifest on desktop + a Pixel 7 viewport.
 

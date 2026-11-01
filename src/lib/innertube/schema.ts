@@ -52,8 +52,11 @@ export const playerResponse = z
       .optional(),
     videoDetails: z
       .object({
-        videoId: z.string(),
-        title: z.string(),
+        // A blocked/unavailable response can still carry a partial videoDetails
+        // block, and the TV client sometimes omits the title entirely. Treat it
+        // as optional so a failing video degrades to the embed instead of a 502.
+        videoId: z.string().optional(),
+        title: z.string().optional(),
         lengthSeconds: z.string().optional(),
         shortDescription: z.string().optional(),
         viewCount: z.string().optional(),

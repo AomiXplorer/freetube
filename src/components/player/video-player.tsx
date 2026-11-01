@@ -5,12 +5,14 @@ import {
   Captions,
   Check,
   Gauge,
+  Headphones,
   Maximize,
   Minimize,
   MoreVertical,
   Pause,
   PictureInPicture2,
   Play,
+  RefreshCw,
   RotateCcw,
   RotateCw,
   Settings2,
@@ -22,7 +24,6 @@ import { cn } from "@/lib/utils/cn";
 import { clamp, formatDuration } from "@/lib/utils/format";
 import { Slider } from "@/components/ui/slider";
 import { Dropdown, DropdownItem, DropdownLabel } from "@/components/ui/dropdown";
-import { Badge } from "@/components/ui/badge";
 import { usePlayerStore } from "@/store/player";
 import type { CaptionTrack, StreamInfo, VideoDetails } from "@/lib/innertube/types";
 
@@ -51,8 +52,21 @@ export function VideoPlayer({
   const audioRef = useRef<HTMLAudioElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const { volume, muted, rate, quality, setVolume, toggleMuted, setRate, setQuality, backgroundAudio } =
-    usePlayerStore();
+  const {
+    volume,
+    muted,
+    rate,
+    quality,
+    setVolume,
+    toggleMuted,
+    setRate,
+    setQuality,
+    backgroundAudio,
+    audioOnly,
+    setAudioOnly,
+    stopToken,
+    setPosition,
+  } = usePlayerStore();
   const nextVideo = usePlayerStore((state) => state.next);
   const sleepTimerEndsAt = usePlayerStore((state) => state.sleepTimerEndsAt);
   const clearSleepTimer = usePlayerStore((state) => state.clearSleepTimer);
@@ -65,24 +79,32 @@ export function VideoPlayer({
   const [fullscreen, setFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [activeTrack, setActiveTrack] = useState<string | null>(null);
+  const [currentStreams, setCurrentStreams] = useState<StreamInfo | null>(streams ?? null);
   const [embedFallback, setEmbedFallback] = useState(!streams?.formats?.length);
-  const [embedAllowed] = useState(true);
+  const [embedBlocked, setEmbedBlocked] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const recoveredRef = useRef(false);
   const [gestureHint, setGestureHint] = useState<string | null>(null);
   const [segments, setSegments] = useState<SponsorSegment[]>([]);
   const [skipped, setSkipped] = useState<string | null>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioSyncRef = useRef<number | null>(null);
 
+  // A retry (or a fresh /api/stream response) replaces the prop without a remount.
+  useEffect(() => {
+    if (streams) setCurrentStreams(streams);
+  }, [streams]);
+
   const videoFormats = useMemo(
-    () => (streams?.formats ?? []).filter((format) => format.hasVideo),
-    [streams],
+    () => (currentStreams?.formats ?? []).filter((format) => format.hasVideo),
+    [currentStreams],
   );
   const audioFormat = useMemo(
     () =>
-      (streams?.formats ?? [])
+      (currentStreams?.formats ?? [])
         .filter((format) => format.hasAudio && !format.hasVideo)
         .sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0],
-    [streams],
+    [currentStreams],
   );
 
   const selectedFormat = useMemo(() => {
@@ -127,13 +149,95 @@ export function VideoPlayer({
         type: "image/jpeg",
       })),
     });
-    navigator.mediaSession.setActionHandler("play", () => videoRef.current?.play().catch(() => undefined));
-    navigator.mediaSession.setActionHandler("pause", () => videoRef.current?.pause());
-    navigator.mediaSession.setActionHandler("nexttrack", nextVideo);
-    navigator.mediaSession.setActionHandler("seekbackward", () => seekBy(-10));
-    navigator.mediaSession.setActionHandler("seekforward", () => seekBy(10));
+    const player = () => videoRef.current;
+    const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
+      ["play", () => player()?.play().catch(() => undefined)],
+      ["pause", () => player()?.pause()],
+      ["stop", () => usePlayerStore.getState().stopPlayback()],
+      ["nexttrack", () => nextVideo()],
+      ["previoustrack", () => usePlayerStore.getState().previous()],
+      ["seekbackward", (event) => seekBy(-(event.seekOffset ?? 10))],
+      ["seekforward", (event) => seekBy(event.seekOffset ?? 10)],
+      [
+        "seekto",
+        (event) => {
+          if (!player() || typeof event.seekTime !== "number") return;
+          player()!.currentTime = event.seekTime;
+        },
+      ],
+    ];
+    for (const [action, handler] of handlers) {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch {
+        /* action unsupported here */
+      }
+    }
+    return () => {
+      for (const [action] of handlers) {
+        try {
+          navigator.mediaSession.setActionHandler(action, null);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [details.id, details.title, details.channel.name]);
+  }, [details.id, details.title, details.channel.name, nextVideo]);
+
+  /* --------------------------------------------------- background / audio-only handoff */
+  const autoAudioOnly = useRef(false);
+
+  useEffect(() => {
+    const handler = () => {
+      const hidden = document.visibilityState === "hidden";
+      if (hidden && backgroundAudio && !usePlayerStore.getState().audioOnly) {
+        // Screen off / tab hidden: keep the timeline moving on the audio element
+        // instead of letting the browser suspend video decoding.
+        autoAudioOnly.current = true;
+        setAudioOnly(true);
+        return;
+      }
+      if (!hidden && autoAudioOnly.current) {
+        autoAudioOnly.current = false;
+        setAudioOnly(false);
+      }
+    };
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, [backgroundAudio, setAudioOnly]);
+
+  /* hard stop from the mini player: kill every listener, never autoplay next */
+  useEffect(() => {
+    const video = videoRef.current;
+    const audio = audioRef.current;
+    if (!video) return;
+    video.pause();
+    audio?.pause();
+    setPlaying(false);
+    // A stop means the user closed the player; do not resume from a stale cue.
+    video.removeAttribute("src");
+    video.load();
+  }, [stopToken, setPlaying]);
+
+  /* When audio-only is on, the global engine owns sound: silence the video. */
+  useEffect(() => {
+    const video = videoRef.current;
+    const audio = audioRef.current;
+    if (!video) return;
+    if (audioOnly) {
+      video.pause();
+      audio?.pause();
+      return;
+    }
+    // Coming back: continue from wherever the background audio left off.
+    const resumeAt = usePlayerStore.getState().positionSeconds;
+    if (resumeAt > 0 && Math.abs(video.currentTime - resumeAt) > 1) video.currentTime = resumeAt;
+    if (usePlayerStore.getState().playing) {
+      void video.play().catch(() => undefined);
+      if (needsSeparateAudio) void audio?.play().catch(() => undefined);
+    }
+  }, [audioOnly, needsSeparateAudio]);
 
   /* ------------------------------------------------------------------------- sponsorblock */
   useEffect(() => {
@@ -176,8 +280,8 @@ export function VideoPlayer({
   /* attach source: HLS manifest when present, progressive otherwise */
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !streams) return;
-    if (!streams.hlsManifestUrl && !selectedFormat?.url) {
+    if (!video || !currentStreams) return;
+    if (!currentStreams.hlsManifestUrl && !selectedFormat?.url) {
       setEmbedFallback(true);
       return;
     }
@@ -187,19 +291,19 @@ export function VideoPlayer({
     let hls: { destroy: () => void } | null = null;
 
     const attach = async () => {
-      if (streams.hlsManifestUrl && video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = streams.hlsManifestUrl;
-      } else if (streams.hlsManifestUrl) {
+      if (currentStreams.hlsManifestUrl && video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = currentStreams.hlsManifestUrl;
+      } else if (currentStreams.hlsManifestUrl) {
         const mod = await import("hls.js");
         const Hls = mod.default;
         if (destroyed) return;
         if (Hls.isSupported()) {
           const instance = new Hls({ enableWorker: true, lowLatencyMode: true });
-          instance.loadSource(streams.hlsManifestUrl);
+          instance.loadSource(currentStreams.hlsManifestUrl);
           instance.attachMedia(video);
           hls = instance;
         } else {
-          video.src = streams.hlsManifestUrl;
+          video.src = currentStreams.hlsManifestUrl;
         }
       } else if (selectedFormat?.url) {
         video.src = selectedFormat.url;
@@ -214,7 +318,7 @@ export function VideoPlayer({
       destroyed = true;
       hls?.destroy();
     };
-  }, [streams, selectedFormat?.url, startAt, autoPlay]);
+  }, [currentStreams, selectedFormat?.url, startAt, autoPlay]);
 
   /* separate audio track sync (adaptive formats without muxed audio) */
   useEffect(() => {
@@ -288,6 +392,7 @@ export function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
     setCurrentTime(video.currentTime);
+    setPosition(video.currentTime);
     if (video.buffered.length) {
       setBuffered(video.buffered.end(video.buffered.length - 1));
     }
@@ -471,6 +576,47 @@ export function VideoPlayer({
     touchState.current = null;
   };
 
+  /** Refresh signed URLs from the server, then hand control back to the player. */
+  const retryPlayback = useCallback(async () => {
+    setRetryCount((count) => count + 1);
+    setEmbedBlocked(false);
+    recoveredRef.current = false;
+    try {
+      const res = await fetch(`/api/stream/${details.id}`);
+      if (res.ok) {
+        const data = (await res.json()) as { streams?: StreamInfo | null };
+        if (data.streams?.formats?.length) {
+          setCurrentStreams(data.streams);
+          setEmbedFallback(false);
+          return;
+        }
+      }
+    } catch {
+      /* fall through to the embed */
+    }
+    setEmbedFallback(true);
+  }, [details.id]);
+
+  /** First playback failure tries a fresh stream, the second falls back silently. */
+  const onPlaybackError = useCallback(async () => {
+    if (!recoveredRef.current) {
+      recoveredRef.current = true;
+      try {
+        const res = await fetch(`/api/stream/${details.id}`);
+        if (res.ok) {
+          const data = (await res.json()) as { streams?: StreamInfo | null };
+          if (data.streams?.formats?.length) {
+            setCurrentStreams(data.streams);
+            return;
+          }
+        }
+      } catch {
+        /* ignore and fall back */
+      }
+    }
+    setEmbedFallback(true);
+  }, [details.id]);
+
   const progressMax = duration || details.durationSeconds || 0;
   const qualityLabel =
     quality === "auto"
@@ -479,34 +625,50 @@ export function VideoPlayer({
   const currentChapter = [...details.chapters].reverse().find((chapter) => chapter.startSeconds <= currentTime);
 
   if (embedFallback) {
-    return (
-      <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black">
-        {embedAllowed ? (
-          <iframe
-            key={details.id}
-            src={`https://www.youtube-nocookie.com/embed/${details.id}?autoplay=1&playsinline=1&rel=0&modestbranding=1`}
-            title={details.title}
-            className="absolute inset-0 size-full"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-            allowFullScreen
-            referrerPolicy="strict-origin-when-cross-origin"
-          />
-        ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-white">
-            <p className="text-sm">This video cannot be embedded by its owner.</p>
+    if (embedBlocked) {
+      return (
+        <div className="flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-xl bg-black p-6 text-center text-white">
+          <p className="text-sm">This video can&apos;t be played here right now.</p>
+          <p className="text-xs text-white/60">It may be limited to the YouTube app or its owner blocked embedding.</p>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={retryPlayback}
+              className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-medium text-black"
+            >
+              <RefreshCw className="size-4" /> Try again
+            </button>
             <a
-              className="rounded-full bg-white px-4 py-2 text-sm font-medium text-black"
+              className="rounded-full border border-white/30 px-4 py-2 text-sm font-medium"
               href={`https://www.youtube.com/watch?v=${details.id}`}
               target="_blank"
               rel="noreferrer"
             >
-              Watch on YouTube
+              Open on YouTube
             </a>
           </div>
-        )}
-        <div className="pointer-events-none absolute left-2 top-2">
-          <Badge variant="muted">Embedded player</Badge>
         </div>
+      );
+    }
+    return (
+      <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black">
+        <iframe
+          key={`${details.id}-${retryCount}`}
+          src={`https://www.youtube-nocookie.com/embed/${details.id}?autoplay=1&playsinline=1&rel=0&modestbranding=1`}
+          title={details.title}
+          className="absolute inset-0 size-full"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          allowFullScreen
+          referrerPolicy="strict-origin-when-cross-origin"
+        />
+        <button
+          type="button"
+          onClick={retryPlayback}
+          aria-label="Reload player"
+          className="absolute bottom-2 right-2 inline-flex size-9 items-center justify-center rounded-full bg-black/60 text-white/80 opacity-0 transition-opacity hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100"
+        >
+          <RefreshCw className="size-4" />
+        </button>
       </div>
     );
   }
@@ -548,7 +710,7 @@ export function VideoPlayer({
           }
           nextVideo();
         }}
-        onError={() => setEmbedFallback(true)}
+        onError={() => void onPlaybackError()}
         onDoubleClick={() => void toggleFullscreen()}
       >
         {details.captions.map((track: CaptionTrack) => (
@@ -727,10 +889,14 @@ export function VideoPlayer({
               </Dropdown>
               <button
                 type="button"
-                aria-label="Picture in picture"
-                onClick={requestPip}
-                className="hidden p-1.5 sm:block"
+                aria-label={audioOnly ? "Switch back to video" : "Listen with audio only"}
+                aria-pressed={audioOnly}
+                onClick={() => setAudioOnly(!audioOnly)}
+                className={cn("p-1.5", audioOnly && "text-red-500")}
               >
+                <Headphones className="size-5" />
+              </button>
+              <button type="button" aria-label="Picture in picture" onClick={requestPip} className="p-1.5">
                 <PictureInPicture2 className="size-5" />
               </button>
               {onTheaterChange ? (
@@ -750,12 +916,6 @@ export function VideoPlayer({
           </div>
         </div>
       </div>
-
-      {!backgroundAudio && !playing ? (
-        <div className="pointer-events-none absolute inset-x-0 top-0 bg-black/40 p-2 text-center text-[11px]">
-          Background audio is off
-        </div>
-      ) : null}
 
       {fullscreen ? (
         <div className="absolute right-3 top-3 flex gap-2">
