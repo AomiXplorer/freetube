@@ -1,0 +1,107 @@
+{
+  "contents": {
+    "twoColumnSearchResultsRenderer": {
+      "primaryContents": {
+        "sectionListRenderer": {
+          "contents": [
+            {
+              "itemSectionRenderer": {
+                "contents": [
+                  {
+                    "videoRenderer": {
+                      "videoId": "dQw4w9WgXcQ",
+                      "title": { "runs": [{ "text": "Rick Astley - Never Gonna Give You Up" }] },
+                      "lengthText": { "simpleText": "3:33" },
+                      "viewCountText": { "simpleText": "1,832,421,778 views" },
+                      "publishedTimeText": { "simpleText": "15 years ago" },
+                      "thumbnail": {
+                        "thumbnails": [
+                          { "url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg", "width": 480, "height": 360 }
+                        ]
+                      },
+                      "ownerText": {
+                        "runs": [
+                          {
+                            "text": "Rick Astley",
+                            "navigationEndpoint": {
+                              "browseEndpoint": { "browseId": "UCuAXFkgsw1L7xaCfnd5JJOw", "canonicalBaseUrl": "/@RickAstleyYT" }
+                            }
+                          }
+                        ]
+                      },
+                      "channelThumbnailSupportedRenderers": {
+                        "channelThumbnailWithLinkRenderer": {
+                          "thumbnail": {
+                            "thumbnails": [{ "url": "https://yt3.ggpht.com/avatar=s88", "width": 88, "height": 88 }]
+                          }
+                        }
+                      },
+                      "ownerBadges": [
+                        { "metadataBadgeRenderer": { "style": "BADGE_STYLE_TYPE_VERIFIED" } }
+                      ]
+                    }
+                  },
+                  {
+                    "lockupViewModel": {
+                      "contentId": "Khow-kh-af4",
+                      "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+                      "contentImage": {
+                        "thumbnailViewModel": {
+                          "image": {
+                            "sources": [
+                              { "url": "https://i.ytimg.com/vi/Khow-kh-af4/hqdefault.jpg", "width": 336, "height": 188 }
+                            ]
+                          },
+                          "overlays": [
+                            {
+                              "thumbnailBottomOverlayViewModel": {
+                                "badges": [{ "thumbnailBadgeViewModel": { "text": "1:29:42" } }]
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      "metadata": {
+                        "lockupMetadataViewModel": {
+                          "title": { "content": "Reacting To Zack D. Films Videos.." },
+                          "image": {
+                            "decoratedAvatarViewModel": { "a11yLabel": "Go to channel KAYE MOVIES" }
+                          },
+                          "metadata": {
+                            "contentMetadataViewModel": {
+                              "metadataRows": [
+                                {
+                                  "metadataParts": [
+                                    { "text": { "content": "KAYE MOVIES" } },
+                                    { "text": { "content": "1.2M views" } },
+                                    { "text": { "content": "2 days ago" } }
+                                  ]
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "channelRenderer": {
+                      "channelId": "UCuAXFkgsw1L7xaCfnd5JJOw",
+                      "title": { "simpleText": "Rick Astley" },
+                      "subscriberCountText": { "simpleText": "@RickAstleyYT" },
+                      "videoCountText": { "simpleText": "3.2M subscribers" },
+                      "thumbnail": { "thumbnails": [{ "url": "https://yt3.ggpht.com/avatar=s88" }] }
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "continuations": [
+            { "nextContinuationData": { "continuation": "SEARCH_CONT_TOKEN" } }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "contents": {
+    "twoColumnWatchNextResults": {
+      "results": {
+        "results": {
+          "contents": [
+            {
+              "videoPrimaryInfoRenderer": {
+                "title": { "runs": [{ "text": "Big Buck Bunny" }] },
+                "viewCount": {
+                  "videoViewCountRenderer": {
+                    "viewCount": { "simpleText": "12,345,678 views" },
+                    "isLive": false
+                  }
+                },
+                "dateText": { "simpleText": "Premiered Mar 1, 2024" },
+                "videoActions": {
+                  "menuRenderer": {
+                    "topLevelButtons": [
+                      {
+                        "segmentedLikeDislikeButtonViewModel": {
+                          "likeButtonViewModel": {
+                            "likeButtonViewModel": {
+                              "toggleButtonViewModel": {
+                                "toggleButtonViewModel": {
+                                  "defaultButtonViewModel": {
+                                    "buttonViewModel": { "title": "120K" }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "videoSecondaryInfoRenderer": {
+                "owner": {
+                  "videoOwnerRenderer": {
+                    "title": { "runs": [{ "text": "Blender Foundation" }] },
+                    "navigationEndpoint": {
+                      "browseEndpoint": { "browseId": "UCxHcHmz1cV2F8hK9aQ1Jm3g" }
+                    },
+                    "subscriberCountText": { "simpleText": "1.5M subscribers" },
+                    "thumbnail": { "thumbnails": [{ "url": "https://yt3.ggpht.com/blender=s88" }] }
+                  }
+                },
+                "attributedDescription": {
+                  "content": "Big Buck Bunny tells the story of a giant rabbit."
+                }
+              }
+            },
+            {
+              "itemSectionRenderer": {
+                "sectionIdentifier": "comment-item-section",
+                "contents": [
+                  {
+                    "continuationItemRenderer": {
+                      "continuationEndpoint": {
+                        "continuationCommand": { "token": "COMMENTS_TOKEN" }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "secondaryResults": {
+        "secondaryResults": {
+          "results": [
+            {
+              "compactVideoRenderer": {
+                "videoId": "aqz-KE-bpKQ",
+                "title": { "simpleText": "Big Buck Bunny 60fps 4K" },
+                "lengthText": { "simpleText": "10:34" },
+                "shortViewCountText": { "simpleText": "24M views" },
+                "publishedTimeText": { "simpleText": "8 years ago" },
+                "thumbnail": { "thumbnails": [{ "url": "https://i.ytimg.com/vi/aqz-KE-bpKQ/hq.jpg", "width": 336, "height": 188 }] },
+                "shortBylineText": {
+                  "runs": [
+                    {
+                      "text": "Blender",
+                      "navigationEndpoint": { "browseEndpoint": { "browseId": "UCxHcHmz1cV2F8hK9aQ1Jm3g" } }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
