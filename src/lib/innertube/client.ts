@@ -47,16 +47,32 @@ export type InnerTubeResult = {
  *    the signed-out bot wall for that user).
  *  - cookie: a pasted youtube.com cookie header (SAPISIDHASH auth).
  */
-type Auth = { bearer: string | null; cookie: string | null };
+type Auth = { bearer: string | null; cookie: string | null; id: string | null };
 
-const NO_AUTH: Auth = { bearer: null, cookie: null };
+const NO_AUTH: Auth = { bearer: null, cookie: null, id: null };
+
+/**
+ * Short, one-way fingerprint of the credential.
+ *
+ * The cache is shared per deployment, so a personalised feed must never share a
+ * key with the signed-out one (or with another account). The fingerprint is a
+ * truncated SHA-256: it discriminates accounts without exposing the secret.
+ */
+async function fingerprint(secret: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(secret));
+  return Array.from(new Uint8Array(digest))
+    .slice(0, 6)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 async function resolveAuth(authenticated: boolean | undefined): Promise<Auth> {
   if (!authenticated) return NO_AUTH;
   const bearer = await getValidAccessToken().catch(() => null);
-  if (bearer) return { bearer, cookie: null };
+  if (bearer) return { bearer, cookie: null, id: await fingerprint(bearer) };
   const cookie = await getSessionCookies().catch(() => null);
-  return cookie ? { bearer: null, cookie } : NO_AUTH;
+  if (!cookie) return NO_AUTH;
+  return { bearer: null, cookie, id: await fingerprint(cookie) };
 }
 
 export function hasAuth(auth: Auth): boolean {
@@ -145,7 +161,13 @@ export async function innertube(options: RequestOptions): Promise<InnerTubeResul
     (options.endpoint === "player" ? CLIENT_ROTATION.player : CLIENT_ROTATION.browse);
   const auth = await resolveAuth(options.authenticated);
   const authMode = auth.bearer ? "bearer" : auth.cookie ? "cookie" : "anon";
-  const key = cacheKey("it", options.endpoint, options.cacheTag, authMode, process.env.INNERTUBE_REGION);
+  const key = cacheKey(
+    "it",
+    options.endpoint,
+    options.cacheTag,
+    auth.id ? `${authMode}:${auth.id}` : authMode,
+    process.env.INNERTUBE_REGION,
+  );
   const ttl = options.ttl ?? 300;
 
   const run = async (): Promise<InnerTubeResult> => {

@@ -48,14 +48,23 @@ export function fetchVideo(id: string): Promise<VideoBundle> {
   return getJson<VideoBundle>(`/api/video/${id}`);
 }
 
+export type HomeResponse = HomeFeed & {
+  /** "personal" = straight from the account feed, "popular" = substitute feed. */
+  source: "personal" | "popular";
+  signedIn: boolean;
+  client?: string;
+};
+
 export function fetchHome(
   params?: string,
   continuation?: string,
-): Promise<HomeFeed & { fallback?: boolean }> {
+  options: { refresh?: boolean } = {},
+): Promise<HomeResponse> {
   const search = new URLSearchParams();
   if (params) search.set("params", params);
   if (continuation) search.set("continuation", continuation);
-  return getJson(`/api/home?${search.toString()}`);
+  if (options.refresh) search.set("refresh", "1");
+  return getJson(`/api/home?${search.toString()}`, { cache: "no-store" });
 }
 
 export function fetchSearch(input: {

@@ -110,6 +110,36 @@ sign-in at all - browsing, search and the embed player work without any account.
 
 ---
 
+### When the home feed is not your feed
+
+The home feed has three distinct sources and the app now tells you which one you got
+(Settings → **Feed check**, or the banner above the grid):
+
+| Source | Meaning | Fix |
+| --- | --- | --- |
+| `personal` | YouTube returned the account feed | nothing to do |
+| `popular` + signed in | The account link worked but YouTube returned an empty feed (new account, watch history off, or a token the TV client rejects) | Sign out, sign in again; make sure your YouTube watch history is enabled |
+| `popular` + anonymous | No usable credential, so a public feed is substituted | Sign in with Google |
+
+Three things used to make this confusing, all fixed:
+
+1. **`/api/home` was cacheable by a shared CDN.** It is cookie-dependent, but the response carried
+   `public, s-maxage=120`, so Vercel could hand one visitor's public feed to a signed-in user for two
+   minutes. The route now sends `private, no-store` for signed-in callers (and no client-side HTTP cache).
+2. **The bearer token was sent to the WEB client.** OAuth credentials are only honoured by the TV
+   (Cobalt) client; WEB behind a bearer returns the signed-out feed. Signed-in requests now try
+   `TVHTML5` first, parse it, and fall through to `WEB` only if that yields nothing - cookies still go
+   straight to `WEB`.
+3. **Nobody parsed TV shelves.** The TV feed is `tvSurfaceContentRenderer → sectionListRenderer →
+   shelfRenderer → tileRenderer`, a shape the parser ignored, so a successfully fetched personal feed
+   looked empty. `summaryFromTile()` handles it (title, byline, duration, views, live/upcoming) and is
+   covered by `tests/tv-feed.test.ts`.
+
+Server-side caches are also keyed by a truncated SHA-256 fingerprint of the credential, so one
+account's feed can never be served to another.
+
+---
+
 ## 3. Getting started
 
 ```bash

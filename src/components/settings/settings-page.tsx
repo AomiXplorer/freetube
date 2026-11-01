@@ -10,6 +10,7 @@ import { usePlayerStore } from "@/store/player";
 import { clearHistory, clearSearches } from "@/db";
 import { cn } from "@/lib/utils/cn";
 import { AccountSection } from "./account-section";
+import { FeedCheck } from "./feed-check";
 
 function Section({
   title,
@@ -160,6 +161,7 @@ export function SettingsPage() {
       </Section>
 
       <AccountSection />
+      <FeedCheck />
 
       <Section
         title="Local data"

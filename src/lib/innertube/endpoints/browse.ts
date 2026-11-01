@@ -1,62 +1,103 @@
-import { innertube } from "../client";
-import { isEmptyFeed, parseContinuationVideos, parseHome } from "../parse/home";
+import { innertube, type Json } from "../client";
+import { isSignedIn } from "@/lib/auth/state";
+import { parseContinuationVideos, parseHome } from "../parse/home";
 import { parseChannel } from "../parse/channel";
 import { parsePlaylist } from "../parse/playlist";
 import type { ChannelPage, HomeFeed, PlaylistPage, GuideEntry } from "../types";
+import type { ClientName } from "../contexts";
 import { text, findAll } from "../parse/walk";
 import { searchVideos } from "./search";
 
 /**
  * Home feed.
  *
- * Signed-out users on a fresh datacenter IP get YouTube's "Try searching to get
- * started" nudge (an empty feed). Rather than showing a blank page we fall back
- * to a real, non-personalised feed built from search results, and label it.
+ * Personalisation is credential- and client-specific:
+ *  - an OAuth token (device flow) is only understood by the TV client, whose
+ *    shelves use tileRenderer - the WEB endpoint behind a bearer returns the
+ *    signed-out feed;
+ *  - pasted cookies authenticate WEB, which owns the classic WEB feed;
+ *  - signed-out visitors on a datacenter IP get an empty "start watching"
+ *    nudge, so we substitute a real popular feed and say so in the payload.
+ *
+ * Every attempt is parsed before it is accepted, so an empty shelf set from the
+ * first client falls through to the next one instead of silently degrading.
  */
-export async function getHomeFeed(options: { params?: string; continuation?: string } = {}): Promise<
-  HomeFeed & { fallback?: boolean }
-> {
+export async function getHomeFeed(
+  options: { params?: string; continuation?: string; fresh?: boolean } = {},
+): Promise<HomeFeed & { source: "personal" | "popular"; client?: string; signedIn: boolean }> {
+  const signedIn = await isSignedIn();
+  const ttl = options.fresh ? 0 : undefined;
+
   if (options.continuation) {
-    const { data } = await innertube({
+    const { data, client } = await innertube({
       endpoint: "browse",
       body: { continuation: options.continuation },
-      ttl: 180,
+      ttl: ttl ?? 180,
       cacheTag: `cont:${options.continuation.slice(0, 24)}`,
+      clients: signedIn ? ["TVHTML5", "WEB", "MWEB"] : undefined,
       authenticated: true,
     });
     const { videos, continuation } = parseContinuationVideos(data);
-    return { chips: [], sections: [{ items: videos }], continuation };
-  }
-
-  const { data } = await innertube({
-    endpoint: "browse",
-    body: { browseId: "FEwhat_to_watch", ...(options.params ? { params: options.params } : {}) },
-    ttl: 120,
-    cacheTag: `home:${options.params ?? "default"}`,
-    authenticated: true,
-  });
-
-  const feed = parseHome(data);
-  const itemCount = feed.sections.reduce((sum, section) => sum + section.items.length, 0);
-
-  if (!feed.chips.length && options.params) {
-    // Chip navigation responses only contain the grid, so re-read chips lazily.
-    feed.chips = [];
-  }
-
-  if (itemCount === 0 || isEmptyFeed(data)) {
-    const fallback = await searchVideos("popular videos this week", {
-      filters: { uploadDate: "week", sort: "views" },
-    });
     return {
-      chips: feed.chips,
-      sections: [{ title: "Popular right now", items: fallback.videos }],
-      continuation: fallback.continuation,
-      fallback: true,
+      chips: [],
+      sections: [{ items: videos }],
+      continuation,
+      source: "personal",
+      client,
+      signedIn,
     };
   }
 
-  return { ...feed, fallback: false };
+  const attempts: { clients: ClientName[]; tag: string }[] = signedIn
+    ? [
+        { clients: ["TVHTML5"], tag: "tv" },
+        { clients: ["WEB"], tag: "web" },
+      ]
+    : [{ clients: ["WEB", "MWEB", "ANDROID"], tag: "anon" }];
+
+  let parseable: { feed: HomeFeed; client: ClientName } | undefined;
+  let lastFeed: HomeFeed | undefined;
+
+  for (const attempt of attempts) {
+    try {
+      const { data, client } = await innertube({
+        endpoint: "browse",
+        body: { browseId: "FEwhat_to_watch", ...(options.params ? { params: options.params } : {}) },
+        ttl: ttl ?? 120,
+        cacheTag: `home:${options.params ?? "default"}:${attempt.tag}`,
+        clients: attempt.clients,
+        authenticated: true,
+      });
+      const feed = parseHome(data as Json);
+      lastFeed = feed;
+      if (countItems(feed) > 0) {
+        parseable = { feed, client };
+        break;
+      }
+    } catch {
+      // Try the next client; a structural failure is not a reason to blank the page.
+    }
+  }
+
+  if (parseable) {
+    return { ...parseable.feed, source: "personal", client: parseable.client, signedIn };
+  }
+
+  // Nothing personalised: keep the chips we did get, but serve a real feed.
+  const fallback = await searchVideos("popular videos this week", {
+    filters: { uploadDate: "week", sort: "views" },
+  });
+  return {
+    chips: lastFeed?.chips ?? [],
+    sections: [{ title: "Popular right now", items: fallback.videos }],
+    continuation: fallback.continuation,
+    source: "popular",
+    signedIn,
+  };
+}
+
+function countItems(feed: HomeFeed): number {
+  return feed.sections.reduce((sum, section) => sum + section.items.length, 0);
 }
 
 /** Channel home / tab payload (tab params come from the parsed channel page). */

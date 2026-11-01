@@ -6,6 +6,7 @@ import { fetchHome } from "@/lib/api/client";
 import { VideoGrid, VideoGridSkeleton } from "@/components/video/video-grid";
 import { ChipBar } from "@/components/video/chip-bar";
 import { Button } from "@/components/ui/button";
+import Link from "next/link";
 import type { CategoryChip } from "@/lib/innertube/types";
 
 export function HomeFeed() {
@@ -57,10 +58,27 @@ export function HomeFeed() {
         </div>
       ) : (
         <div className="space-y-8">
-          {firstPage?.fallback ? (
+          {firstPage?.source === "popular" && firstPage.signedIn ? (
+            <div className="rounded-lg bg-secondary px-3 py-2">
+              <p className="text-xs text-muted-foreground">
+                YouTube returned an empty feed for your account, so popular videos are shown
+                instead. A fresh sign-in usually fixes it.
+              </p>
+              <button
+                type="button"
+                className="mt-1 text-xs font-medium underline underline-offset-2"
+                onClick={() => query.refetch()}
+              >
+                Reload my feed
+              </button>
+            </div>
+          ) : firstPage?.source === "popular" ? (
             <p className="rounded-lg bg-secondary px-3 py-2 text-xs text-muted-foreground">
-              Showing a public feed because your YouTube home feed needs an account. Connect cookies
-              in Settings for a personalised feed.
+              Showing a public feed.{" "}
+              <Link href="/settings" className="font-medium underline underline-offset-2">
+                Sign in with Google
+              </Link>{" "}
+              for your own recommendations.
             </p>
           ) : null}
           {sections.map((section, index) => (

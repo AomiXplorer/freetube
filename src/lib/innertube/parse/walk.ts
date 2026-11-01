@@ -247,6 +247,66 @@ function summaryFromShortsLockup(node: J): VideoSummary | undefined {
   };
 }
 
+/**
+ * TV (Cobalt) shelves: shelfRenderer > horizontalListRenderer > tileRenderer.
+ * The signed-in feed served to OAuth tokens only exists in this shape, so the
+ * home parser is blind without it.
+ */
+function summaryFromTile(tile: J): VideoSummary | undefined {
+  const header = tile.header?.tileHeaderRenderer as J | undefined;
+  const watch =
+    tile.onSelectCommand?.watchEndpoint ??
+    tile.onSelectCommand?.reelWatchEndpoint ??
+    header?.navigationEndpoint?.watchEndpoint;
+  const id: string | undefined = watch?.videoId;
+  const title = text(header?.title) ?? text(header?.headline) ?? text(tile.title);
+  if (!id || !title) return undefined;
+
+  const durationText = text(header?.lengthText);
+  const byline = text(header?.shortBylineText) ?? text(header?.byline);
+
+  const lines: string[] = [];
+  for (const line of (tile.metadata?.tileMetadataRenderer?.lines as any[]) ?? []) {
+    for (const item of (line?.lineRenderer?.items as any[]) ?? []) {
+      const value = text(item?.lineItemRenderer?.text);
+      if (value) lines.push(value);
+    }
+  }
+  const viewPart = lines.find((l) => /view|watching|waiting/i.test(l));
+  const datePart = lines.find((l) => /ago|Streamed|Premier/i.test(l));
+  const badges = findAll(tile, "thumbnailBadgeViewModel");
+  // TV puts the channel link on the byline runs, not on the tile itself.
+  const channelBrowse = findAll(tile, "browseEndpoint").find((entry) =>
+    String(entry.browseId ?? "").startsWith("UC"),
+  );
+  const liveLine = lines.find((l) => /LIVE|UPCOMING/i.test(l))?.toUpperCase();
+  const kind: VideoKind = liveLine?.includes("UPCOMING")
+    ? "upcoming"
+    : liveLine
+      ? "live"
+      : "video";
+
+  return {
+    id,
+    kind,
+    title,
+    thumbnails: thumbnails(header?.thumbnail ?? tile.thumbnail),
+    channel: {
+      name: byline ?? "",
+      id: channelBrowse?.browseId as string | undefined,
+      handle: typeof channelBrowse?.canonicalBaseUrl === "string"
+        ? channelBrowse.canonicalBaseUrl.replace(/^\//, "")
+        : undefined,
+    },
+    durationSeconds: parseDurationText(durationText),
+    durationText,
+    viewCountText: viewPart,
+    views: parseCountLabel(viewPart),
+    publishedText: datePart,
+    description: badges.map((b) => text(b.text)).find((t): t is string => Boolean(t)),
+  };
+}
+
 const KNOWN_RENDERER_KEYS = [
   "videoRenderer",
   "compactVideoRenderer",
@@ -272,6 +332,7 @@ export function collectVideos(root: unknown): VideoSummary[] {
     if (isObj(node.reelItemRenderer)) push(summaryFromLegacy(node.reelItemRenderer as J, true));
     if (isObj(node.shortsLockupViewModel)) push(summaryFromShortsLockup(node.shortsLockupViewModel as J));
     if (isObj(node.lockupViewModel)) push(summaryFromLockup(node.lockupViewModel as J));
+    if (isObj(node.tileRenderer)) push(summaryFromTile(node.tileRenderer as J));
   });
   return out;
 }
